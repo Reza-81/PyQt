@@ -27,7 +27,7 @@ try:
         QPushButton,
         QSizePolicy,
         QSlider,
-        QSpinBox,
+        QToolButton,
         QVBoxLayout,
         QWidget,
     )
@@ -48,7 +48,7 @@ except ImportError:  # pragma: no cover - used when PyQt6 is unavailable.
         QPushButton,
         QSizePolicy,
         QSlider,
-        QSpinBox,
+        QToolButton,
         QVBoxLayout,
         QWidget,
     )
@@ -179,6 +179,10 @@ class VideoProcessor(QMainWindow):
         coefficient_title = QLabel("BLUE CHANNEL FACTOR")
         coefficient_title.setObjectName("section")
         side.addWidget(coefficient_title)
+
+        factor_row = QHBoxLayout()
+        factor_row.setContentsMargins(0, 0, 0, 0)
+        factor_row.setSpacing(4)
         self.factor_spin = QDoubleSpinBox()
         # Keep the coefficient non-negative, but do not impose the previous
         # arbitrary maximum of 10. Values above 255 are valid input; they
@@ -187,12 +191,40 @@ class VideoProcessor(QMainWindow):
         self.factor_spin.setDecimals(6)
         self.factor_spin.setSingleStep(0.1)
         self.factor_spin.setStepType(QAbstractSpinBox.StepType.AdaptiveDecimalStepType)
+        # Hide the native spin-box subcontrols. Some Windows Qt styles make
+        # the upper native subcontrol behave like the line edit. Explicit
+        # tool buttons below guarantee that both arrows receive clicks.
+        self.factor_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.factor_spin.setAccelerated(True)
+        self.factor_spin.setKeyboardTracking(True)
         self.factor_spin.setValue(DEFAULT_BLUE_FACTOR)
         self.factor_spin.setToolTip(
             "Enter any non-negative coefficient. Use the arrows to increment or decrement it."
         )
         self.factor_spin.valueChanged.connect(self._factor_changed)
-        side.addWidget(self.factor_spin)
+        factor_row.addWidget(self.factor_spin, 1)
+
+        factor_arrows = QVBoxLayout()
+        factor_arrows.setContentsMargins(0, 0, 0, 0)
+        factor_arrows.setSpacing(1)
+        self.factor_up_button = QToolButton()
+        self.factor_up_button.setObjectName("factorArrow")
+        self.factor_up_button.setText("▲")
+        self.factor_up_button.setToolTip("Increase coefficient")
+        self.factor_up_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.factor_up_button.setFixedSize(34, 16)
+        self.factor_up_button.clicked.connect(self.factor_spin.stepUp)
+        self.factor_down_button = QToolButton()
+        self.factor_down_button.setObjectName("factorArrow")
+        self.factor_down_button.setText("▼")
+        self.factor_down_button.setToolTip("Decrease coefficient")
+        self.factor_down_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.factor_down_button.setFixedSize(34, 16)
+        self.factor_down_button.clicked.connect(self.factor_spin.stepDown)
+        factor_arrows.addWidget(self.factor_up_button)
+        factor_arrows.addWidget(self.factor_down_button)
+        factor_row.addLayout(factor_arrows)
+        side.addLayout(factor_row)
 
         self.process_button = QPushButton("Process")
         self.process_button.clicked.connect(self.process_current_frame)
@@ -235,12 +267,9 @@ class VideoProcessor(QMainWindow):
         self.frame_slider.valueChanged.connect(self._slider_frame_changed)
         navigation.addWidget(self.frame_slider, 1)
 
-        self.frame_spin = QSpinBox()
-        self.frame_spin.setRange(0, 0)
-        self.frame_spin.valueChanged.connect(self._spin_frame_changed)
-        navigation.addWidget(self.frame_spin)
         self.frame_status = QLabel("0 / 0")
         self.frame_status.setMinimumWidth(70)
+        self.frame_status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         navigation.addWidget(self.frame_status)
         content.addLayout(navigation)
 
@@ -264,7 +293,10 @@ class VideoProcessor(QMainWindow):
             QPushButton#playControl { background: #1685e5; color: #ffffff; border: 2px solid #5abaff; border-radius: 20px; font-size: 18px; font-weight: 700; padding: 0px; }
             QPushButton#playControl:hover { background: #2c9af0; border-color: #9bd8ff; }
             QPushButton#playControl:pressed { background: #0d6fc2; border-color: #d1efff; }
-            QDoubleSpinBox, QSpinBox { background: #263a52; color: #ffffff; border: 1px solid #405974; border-radius: 4px; padding: 6px; }
+            QDoubleSpinBox { background: #263a52; color: #ffffff; border: 1px solid #405974; border-radius: 4px; padding: 6px; }
+            QToolButton#factorArrow { background: #263a52; color: #e6edf6; border: 1px solid #405974; border-radius: 2px; padding: 0px; font-size: 10px; }
+            QToolButton#factorArrow:hover { background: #315172; color: #ffffff; border-color: #47a5ff; }
+            QToolButton#factorArrow:pressed { background: #1685e5; border-color: #9bd8ff; }
             QSlider::groove:horizontal { height: 5px; background: #3a5068; border-radius: 2px; }
             QSlider::handle:horizontal { width: 14px; margin: -5px 0; background: #238ff0; border-radius: 7px; }
             """
@@ -350,7 +382,6 @@ class VideoProcessor(QMainWindow):
         self._current_processed_frame = None
         self.save_button.setEnabled(False)
         self.frame_slider.setRange(0, frame_count - 1)
-        self.frame_spin.setRange(0, frame_count - 1)
         self.info_label.setText(
             f"Frames: {frame_count}\n"
             f"FPS: {self._fps:.2f}\n"
@@ -399,16 +430,11 @@ class VideoProcessor(QMainWindow):
         self._updating_controls = True
         try:
             self.frame_slider.setValue(index)
-            self.frame_spin.setValue(index)
         finally:
             self._updating_controls = False
         self.frame_status.setText(f"{index} / {max(0, self._frame_count - 1)}")
 
     def _slider_frame_changed(self, value: int) -> None:
-        if not self._updating_controls and self._capture is not None:
-            self._read_and_display(value)
-
-    def _spin_frame_changed(self, value: int) -> None:
         if not self._updating_controls and self._capture is not None:
             self._read_and_display(value)
 
