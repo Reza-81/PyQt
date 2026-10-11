@@ -6,6 +6,7 @@ This folder contains the advanced video processing task from `Advance Task-PyQt-
 
 - Open common video files and show frame count, FPS, and resolution.
 - Navigate by slider, previous/next buttons, or playback; the current frame number is shown beside the slider.
+- Hover over the timeline slider to preview the corresponding frame in a small popup.
 - Multiply the OpenCV blue channel by a user-selected coefficient.
 - The coefficient accepts any finite non-negative floating-point value supported by Qt, with six decimal places and adaptive up/down steps.
 - Apply coefficient changes instantly to the current frame and continue applying the latest coefficient while navigating or playing.
