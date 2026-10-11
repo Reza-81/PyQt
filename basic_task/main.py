@@ -473,31 +473,17 @@ class VideoPlayer(QMainWindow):
         self.info_label.setObjectName("info")
         side_layout.addWidget(self.info_label)
 
-        frame_title = QLabel("FRAME SELECTION")
-        frame_title.setObjectName("section")
-        side_layout.addWidget(frame_title)
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Frame"))
         self.frame_spin = QSpinBox()
         self.frame_spin.setRange(0, 0)
         self.frame_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.UpDownArrows)
+        self.frame_spin.setMaximumWidth(92)
         self.frame_spin.valueChanged.connect(self._spin_frame_changed)
-        row.addWidget(self.frame_spin)
-        side_layout.addLayout(row)
 
         self.frame_slider = PreviewSlider(Qt.Orientation.Horizontal)
         self.frame_slider.setRange(0, 0)
         self.frame_slider.valueChanged.connect(self._slider_frame_changed)
         self.frame_slider.hover_value_changed.connect(self._schedule_frame_preview)
         self.frame_slider.hover_left.connect(self._hide_frame_preview)
-        side_layout.addWidget(self.frame_slider)
-        slider_labels = QHBoxLayout()
-        self.first_frame_label = QLabel("0")
-        self.last_frame_label = QLabel("0")
-        slider_labels.addWidget(self.first_frame_label)
-        slider_labels.addStretch(1)
-        slider_labels.addWidget(self.last_frame_label)
-        side_layout.addLayout(slider_labels)
 
         roi_title = QLabel("REGION SELECTION")
         roi_title.setObjectName("section")
@@ -545,14 +531,24 @@ class VideoPlayer(QMainWindow):
         content.addWidget(self.canvas, 1)
 
         controls = QHBoxLayout()
+        self.previous_button = QPushButton("<<")
+        self.previous_button.setToolTip("Previous frame")
+        self.previous_button.clicked.connect(self.previous_frame)
         self.toggle_button = QPushButton("▶  Play")
         self.toggle_button.setObjectName("primary")
         self.toggle_button.clicked.connect(self.toggle_playback)
+        self.next_button = QPushButton(">>")
+        self.next_button.setToolTip("Next frame")
+        self.next_button.clicked.connect(self.next_frame)
         self.stop_button = QPushButton("■  Stop")
         self.stop_button.clicked.connect(self.stop_video)
+        controls.addWidget(self.previous_button)
         controls.addWidget(self.toggle_button)
+        controls.addWidget(self.next_button)
         controls.addWidget(self.stop_button)
-        controls.addStretch(1)
+        controls.addWidget(QLabel("Frame:"))
+        controls.addWidget(self.frame_spin)
+        controls.addWidget(self.frame_slider, 1)
         self.frame_status = QLabel("Frame: —")
         self.frame_status.setObjectName("frame_status")
         controls.addWidget(self.frame_status)
@@ -660,8 +656,6 @@ class VideoPlayer(QMainWindow):
         self._fps = fps if fps > 0.0 else 30.0
         self.frame_slider.setRange(0, frame_count - 1)
         self.frame_spin.setRange(0, frame_count - 1)
-        self.first_frame_label.setText("0")
-        self.last_frame_label.setText(str(frame_count - 1))
         self.info_label.setText(
             f"Resolution: {width} × {height}\n"
             f"FPS: {self._fps:.2f}\n"
@@ -777,6 +771,20 @@ class VideoPlayer(QMainWindow):
         self._preview_popup.move(popup_x, popup_y)
         self._preview_popup.show()
         self._preview_popup.raise_()
+
+    def previous_frame(self) -> None:
+        if self._capture is None:
+            self._show_warning("No video loaded", "Open a video before navigating frames.")
+            return
+        self.pause_video()
+        self._read_and_display(self._frame_index - 1)
+
+    def next_frame(self) -> None:
+        if self._capture is None:
+            self._show_warning("No video loaded", "Open a video before navigating frames.")
+            return
+        self.pause_video()
+        self._read_and_display(self._frame_index + 1)
 
     def toggle_playback(self) -> None:
         if self.timer.isActive():
