@@ -15,6 +15,7 @@ try:
     from PyQt6.QtGui import QColor, QFont, QImage, QPainter, QPen
     from PyQt6.QtWidgets import (
         QApplication,
+        QAbstractSpinBox,
         QDialog,
         QFileDialog,
         QDoubleSpinBox,
@@ -35,6 +36,7 @@ except ImportError:  # pragma: no cover - used when PyQt6 is unavailable.
     from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
     from PySide6.QtWidgets import (
         QApplication,
+        QAbstractSpinBox,
         QDialog,
         QFileDialog,
         QDoubleSpinBox,
@@ -178,11 +180,18 @@ class VideoProcessor(QMainWindow):
         coefficient_title.setObjectName("section")
         side.addWidget(coefficient_title)
         self.factor_spin = QDoubleSpinBox()
-        self.factor_spin.setRange(0.0, 10.0)
-        self.factor_spin.setDecimals(2)
+        # Keep the coefficient non-negative, but do not impose the previous
+        # arbitrary maximum of 10. Values above 255 are valid input; they
+        # simply saturate the uint8 blue channel at 255.
+        self.factor_spin.setRange(0.0, sys.float_info.max)
+        self.factor_spin.setDecimals(6)
         self.factor_spin.setSingleStep(0.1)
+        self.factor_spin.setStepType(QAbstractSpinBox.StepType.AdaptiveDecimalStepType)
         self.factor_spin.setValue(DEFAULT_BLUE_FACTOR)
-        self.factor_spin.setToolTip("Multiply blue-channel intensity by this coefficient")
+        self.factor_spin.setToolTip(
+            "Enter any non-negative coefficient. Use the arrows to increment or decrement it."
+        )
+        self.factor_spin.valueChanged.connect(self._factor_changed)
         side.addWidget(self.factor_spin)
 
         self.process_button = QPushButton("Process")
@@ -208,8 +217,10 @@ class VideoProcessor(QMainWindow):
         self.previous_button = QPushButton("<<")
         self.previous_button.setToolTip("Previous frame")
         self.previous_button.clicked.connect(self.previous_frame)
-        self.toggle_button = QPushButton(">")
-        self.toggle_button.setObjectName("primary")
+        self.toggle_button = QPushButton("▶")
+        self.toggle_button.setObjectName("playControl")
+        self.toggle_button.setMinimumSize(52, 40)
+        self.toggle_button.setMaximumWidth(52)
         self.toggle_button.setToolTip("Play / pause")
         self.toggle_button.clicked.connect(self.toggle_playback)
         self.next_button = QPushButton(">>")
@@ -250,6 +261,9 @@ class VideoProcessor(QMainWindow):
             QPushButton:disabled { color: #6e8095; background: #203044; border-color: #2d4055; }
             QPushButton#primary { background: #1685e5; border-color: #1685e5; color: #ffffff; }
             QPushButton#primary:hover { background: #2c9af0; }
+            QPushButton#playControl { background: #1685e5; color: #ffffff; border: 2px solid #5abaff; border-radius: 20px; font-size: 18px; font-weight: 700; padding: 0px; }
+            QPushButton#playControl:hover { background: #2c9af0; border-color: #9bd8ff; }
+            QPushButton#playControl:pressed { background: #0d6fc2; border-color: #d1efff; }
             QDoubleSpinBox, QSpinBox { background: #263a52; color: #ffffff; border: 1px solid #405974; border-radius: 4px; padding: 6px; }
             QSlider::groove:horizontal { height: 5px; background: #3a5068; border-radius: 2px; }
             QSlider::handle:horizontal { width: 14px; margin: -5px 0; background: #238ff0; border-radius: 7px; }
@@ -328,7 +342,11 @@ class VideoProcessor(QMainWindow):
         self._frame_count = frame_count
         self._fps = fps if fps > 0 else 30.0
         self._frame_index = 0
-        self._processing_enabled = False
+        # Processing is active as soon as a video is loaded. The coefficient
+        # control updates the displayed frame immediately, so Process is no
+        # longer required after every coefficient change.
+        self._processing_enabled = True
+        self._blue_factor = self.factor_spin.value()
         self._current_processed_frame = None
         self.save_button.setEnabled(False)
         self.frame_slider.setRange(0, frame_count - 1)
@@ -343,7 +361,7 @@ class VideoProcessor(QMainWindow):
             self._capture.release()
             self._capture = None
             return False
-        self.status_label.setText("Ready — choose a blue factor and press Process")
+        self.status_label.setText("Ready — blue-channel updates are automatic")
         return True
 
     def _display_frame(self, index: int, frame) -> bool:
@@ -411,6 +429,15 @@ class VideoProcessor(QMainWindow):
         self._display_frame(self._frame_index, self._current_raw_frame)
         self.status_label.setText(f"Blue channel processed with coefficient {self._blue_factor:.2f}")
 
+    def _factor_changed(self, value: float) -> None:
+        """Apply a changed coefficient immediately to the current frame."""
+        self._blue_factor = float(value)
+        if self._capture is None or self._current_raw_frame is None:
+            return
+        self._processing_enabled = True
+        self._display_frame(self._frame_index, self._current_raw_frame)
+        self.status_label.setText(f"Updated blue channel coefficient to {self._blue_factor:.2f}")
+
     def previous_frame(self) -> None:
         if self._capture is None:
             self._show_warning("No video loaded", "Open a video before navigating frames.")
@@ -439,13 +466,15 @@ class VideoProcessor(QMainWindow):
             self._read_and_display(0)
         self.timer.start(max(1, round(1000.0 / self._fps)))
         self.toggle_button.setText("Ⅱ")
+        self.toggle_button.setToolTip("Pause")
         self.status_label.setText("Playing")
 
     def pause_video(self) -> None:
         if self.timer.isActive():
             self.timer.stop()
             self.status_label.setText("Paused")
-        self.toggle_button.setText(">")
+        self.toggle_button.setText("▶")
+        self.toggle_button.setToolTip("Play")
 
     def _advance_frame(self) -> None:
         next_index = self._frame_index + 1
@@ -467,7 +496,7 @@ class VideoProcessor(QMainWindow):
 
     def save_current_frame(self) -> None:
         if self._current_processed_frame is None:
-            self._show_warning("No processed frame", "Press Process before saving the current frame.")
+            self._show_warning("No processed frame", "Open a video before saving the current frame.")
             return
         try:
             path = self._show_file_dialog(save=True)
@@ -519,4 +548,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
