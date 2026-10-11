@@ -27,6 +27,7 @@ try:
         QPushButton,
         QSizePolicy,
         QSlider,
+        QSpinBox,
         QToolButton,
         QVBoxLayout,
         QWidget,
@@ -48,6 +49,7 @@ except ImportError:  # pragma: no cover - used when PyQt6 is unavailable.
         QPushButton,
         QSizePolicy,
         QSlider,
+        QSpinBox,
         QToolButton,
         QVBoxLayout,
         QWidget,
@@ -346,6 +348,13 @@ class VideoProcessor(QMainWindow):
         self.frame_slider.valueChanged.connect(self._slider_frame_changed)
         self.frame_slider.hover_value_changed.connect(self._schedule_frame_preview)
         self.frame_slider.hover_left.connect(self._hide_frame_preview)
+        self.frame_spin = QSpinBox()
+        self.frame_spin.setRange(0, 0)
+        self.frame_spin.setFixedWidth(125)
+        self.frame_spin.setToolTip("Enter a frame number to display")
+        self.frame_spin.valueChanged.connect(self._spin_frame_changed)
+        navigation.addWidget(QLabel("Frame:"))
+        navigation.addWidget(self.frame_spin)
         navigation.addWidget(self.frame_slider, 1)
 
         self.frame_status = QLabel("0 / 0")
@@ -374,8 +383,9 @@ class VideoProcessor(QMainWindow):
             QPushButton#playControl { background: #1685e5; color: #ffffff; border: 2px solid #5abaff; border-radius: 20px; font-size: 18px; font-weight: 700; padding: 0px; }
             QPushButton#playControl:hover { background: #2c9af0; border-color: #9bd8ff; }
             QPushButton#playControl:pressed { background: #0d6fc2; border-color: #d1efff; }
-            QDoubleSpinBox { background: #263a52; color: #ffffff; border: 1px solid #405974; border-radius: 4px; padding: 6px; }
-            QToolButton#factorArrow { background: #263a52; color: #e6edf6; border: 1px solid #405974; border-radius: 2px; padding: 0px; font-size: 10px; }
+             QDoubleSpinBox { background: #263a52; color: #ffffff; border: 1px solid #405974; border-radius: 4px; padding: 6px; }
+             QSpinBox { background: #263a52; color: #ffffff; border: 1px solid #405974; border-radius: 4px; padding: 6px; }
+             QToolButton#factorArrow { background: #263a52; color: #e6edf6; border: 1px solid #405974; border-radius: 2px; padding: 0px; font-size: 10px; }
             QToolButton#factorArrow:hover { background: #315172; color: #ffffff; border-color: #47a5ff; }
             QToolButton#factorArrow:pressed { background: #1685e5; border-color: #9bd8ff; }
             QSlider::groove:horizontal { height: 5px; background: #3a5068; border-radius: 2px; }
@@ -478,6 +488,7 @@ class VideoProcessor(QMainWindow):
         self._current_processed_frame = None
         self.save_button.setEnabled(False)
         self.frame_slider.setRange(0, frame_count - 1)
+        self.frame_spin.setRange(0, frame_count - 1)
         self.info_label.setText(
             f"Frames: {frame_count}\n"
             f"FPS: {self._fps:.2f}\n"
@@ -525,10 +536,15 @@ class VideoProcessor(QMainWindow):
     def _sync_frame_controls(self, index: int) -> None:
         self._updating_controls = True
         try:
+            self.frame_spin.setValue(index)
             self.frame_slider.setValue(index)
         finally:
             self._updating_controls = False
         self.frame_status.setText(f"{index} / {max(0, self._frame_count - 1)}")
+
+    def _spin_frame_changed(self, value: int) -> None:
+        if not self._updating_controls and self._capture is not None:
+            self._read_and_display(value)
 
     def _slider_frame_changed(self, value: int) -> None:
         if not self._updating_controls and self._capture is not None:

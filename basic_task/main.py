@@ -480,6 +480,11 @@ class VideoPlayer(QMainWindow):
         self.frame_slider.valueChanged.connect(self._slider_frame_changed)
         self.frame_slider.hover_value_changed.connect(self._schedule_frame_preview)
         self.frame_slider.hover_left.connect(self._hide_frame_preview)
+        self.frame_spin = QSpinBox()
+        self.frame_spin.setRange(0, 0)
+        self.frame_spin.setFixedWidth(125)
+        self.frame_spin.setToolTip("Enter a frame number to display")
+        self.frame_spin.valueChanged.connect(self._spin_frame_changed)
 
         roi_title = QLabel("REGION SELECTION")
         roi_title.setObjectName("section")
@@ -566,6 +571,8 @@ class VideoPlayer(QMainWindow):
         controls.addWidget(self.toggle_button)
         controls.addWidget(self.next_button)
         controls.addWidget(self.stop_button)
+        controls.addWidget(QLabel("Frame:"))
+        controls.addWidget(self.frame_spin)
         controls.addWidget(self.frame_slider, 1)
         self.frame_status = QLabel("Frame: —")
         self.frame_status.setObjectName("frame_status")
@@ -678,6 +685,7 @@ class VideoPlayer(QMainWindow):
         self._frame_count = frame_count
         self._fps = fps if fps > 0.0 else 30.0
         self.frame_slider.setRange(0, frame_count - 1)
+        self.frame_spin.setRange(0, frame_count - 1)
         self.info_label.setText(
             f"Resolution: {width} × {height}\n"
             f"FPS: {self._fps:.2f}\n"
@@ -719,11 +727,16 @@ class VideoPlayer(QMainWindow):
     def _sync_frame_controls(self, index: int) -> None:
         self._updating_controls = True
         try:
+            self.frame_spin.setValue(index)
             self.frame_slider.setValue(index)
         finally:
             self._updating_controls = False
         total = max(0, self._frame_count - 1)
         self.frame_status.setText(f"Frame: {index} / {total}")
+
+    def _spin_frame_changed(self, value: int) -> None:
+        if not self._updating_controls and self._capture is not None:
+            self._read_and_display(value)
 
     def _slider_frame_changed(self, value: int) -> None:
         if not self._updating_controls and self._capture is not None:
