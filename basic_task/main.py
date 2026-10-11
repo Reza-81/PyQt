@@ -7,7 +7,6 @@ Qt binding has been provided under the LGPL PySide license.
 
 from __future__ import annotations
 
-import math
 import sys
 from pathlib import Path
 from typing import Optional
@@ -18,6 +17,7 @@ try:  # The requested binding.
     from PyQt6.QtWidgets import (
         QApplication,
         QAbstractSpinBox,
+        QDialog,
         QFileDialog,
         QFrame,
         QGridLayout,
@@ -39,6 +39,7 @@ except ImportError:  # pragma: no cover - exercised only when PyQt6 is absent.
     from PySide6.QtWidgets import (
         QApplication,
         QAbstractSpinBox,
+        QDialog,
         QFileDialog,
         QFrame,
         QGridLayout,
@@ -69,11 +70,7 @@ def clamp(value: int, low: int, high: int) -> int:
     return max(low, min(value, high))
 
 
-# A histogram is a distribution, so processing every pixel in a very large
-# ROI is unnecessary.  This cap keeps histogram work predictable for 4K/video
-# frames while preserving exact histograms for smaller regions.
-MAX_HISTOGRAM_PIXELS = 250_000
-HISTOGRAM_REFRESH_INTERVAL_MS = 75
+DEFAULT_HISTOGRAM_PERCENTAGE = 25
 
 
 class VideoCanvas(QWidget):
@@ -234,8 +231,11 @@ class HistogramWidget(QWidget):
         self._histograms: Optional[dict[str, object]] = None
         self._sample_size = 0
         self._total_size = 0
+        self._requested_percentage = DEFAULT_HISTOGRAM_PERCENTAGE
 
-    def update_histogram(self, frame_bgr, roi: tuple[int, int, int, int]) -> None:
+    def update_histogram(
+        self, frame_bgr, roi: tuple[int, int, int, int], percentage: int
+    ) -> None:
         if cv2 is None or np is None or frame_bgr is None or roi is None:
             return
         x, y, width, height = roi
@@ -249,9 +249,18 @@ class HistogramWidget(QWidget):
             return
 
         self._total_size = int(sample.shape[0] * sample.shape[1])
-        sampling_step = max(1, math.ceil(math.sqrt(self._total_size / MAX_HISTOGRAM_PIXELS)))
-        if sampling_step > 1:
-            sample = sample[::sampling_step, ::sampling_step]
+        self._requested_percentage = max(1, min(int(percentage), 100))
+
+        if self._requested_percentage < 100:
+            # Select evenly distributed rows and columns. This makes the
+            # percentage a spatially representative sample rather than just
+            # taking the first pixels in the ROI.
+            fraction = self._requested_percentage / 100.0
+            row_count = max(1, round(sample.shape[0] * np.sqrt(fraction)))
+            column_count = max(1, round(sample.shape[1] * np.sqrt(fraction)))
+            rows = np.linspace(0, sample.shape[0] - 1, row_count, dtype=np.intp)
+            columns = np.linspace(0, sample.shape[1] - 1, column_count, dtype=np.intp)
+            sample = sample[rows][:, columns]
 
         # bincount is faster than calling np.histogram three times for uint8
         # image channels and always produces the required 256 bins.
@@ -294,9 +303,9 @@ class HistogramWidget(QWidget):
             painter.setPen(QColor("#d7e0ea"))
             painter.drawText(QRectF(legend_x + 18, 12, 55, 24), Qt.AlignmentFlag.AlignVCenter, name)
             legend_x += 92
-        pixel_label = f"{self._total_size:,} pixels"
+        pixel_label = f"{self._requested_percentage}% ({self._sample_size:,} pixels)"
         if self._sample_size < self._total_size:
-            pixel_label += f" (sampled {self._sample_size:,})"
+            pixel_label += f" / {self._total_size:,}"
         painter.drawText(QRectF(self.width() - 270, 12, 260, 24), Qt.AlignmentFlag.AlignRight, pixel_label)
 
         if not self._histograms:
@@ -327,10 +336,10 @@ class HistogramWindow(QMainWindow):
         self.resize(620, 410)
         self.setCentralWidget(HistogramWidget(self))
 
-    def set_data(self, frame_bgr, roi: tuple[int, int, int, int]) -> None:
+    def set_data(self, frame_bgr, roi: tuple[int, int, int, int], percentage: int) -> None:
         widget = self.centralWidget()
         if isinstance(widget, HistogramWidget):
-            widget.update_histogram(frame_bgr, roi)
+            widget.update_histogram(frame_bgr, roi, percentage)
 
 
 class VideoPlayer(QMainWindow):
@@ -351,13 +360,6 @@ class VideoPlayer(QMainWindow):
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._advance_frame)
-
-        # Histogram updates are intentionally throttled. Video playback can
-        # continue at the video FPS while the analysis window refreshes at a
-        # predictable rate instead of doing expensive work for every frame.
-        self._histogram_refresh_timer = QTimer(self)
-        self._histogram_refresh_timer.setSingleShot(True)
-        self._histogram_refresh_timer.timeout.connect(self._refresh_histogram)
 
         self.canvas = VideoCanvas()
         self.canvas.roi_selected.connect(self._on_roi_selected)
@@ -425,6 +427,26 @@ class VideoPlayer(QMainWindow):
         roi_help.setObjectName("muted")
         side_layout.addWidget(roi_help)
 
+        histogram_percent_title = QLabel("HISTOGRAM PIXELS")
+        histogram_percent_title.setObjectName("section")
+        side_layout.addWidget(histogram_percent_title)
+        percentage_row = QHBoxLayout()
+        percentage_row.addWidget(QLabel("Pixels used"))
+        self.histogram_percent_spin = QSpinBox()
+        self.histogram_percent_spin.setRange(1, 100)
+        self.histogram_percent_spin.setValue(DEFAULT_HISTOGRAM_PERCENTAGE)
+        self.histogram_percent_spin.setSuffix(" %")
+        self.histogram_percent_spin.setToolTip(
+            "Percentage of pixels from the selected region used for each histogram"
+        )
+        self.histogram_percent_spin.valueChanged.connect(self._histogram_percentage_changed)
+        percentage_row.addWidget(self.histogram_percent_spin)
+        side_layout.addLayout(percentage_row)
+        percentage_help = QLabel("100% uses every pixel. The histogram updates on every frame.")
+        percentage_help.setWordWrap(True)
+        percentage_help.setObjectName("muted")
+        side_layout.addWidget(percentage_help)
+
         self.histogram_button = QPushButton("▥  Show histogram")
         self.histogram_button.clicked.connect(self.show_histogram)
         side_layout.addWidget(self.histogram_button)
@@ -490,14 +512,30 @@ class VideoPlayer(QMainWindow):
         if cv2 is None or np is None:
             self._show_error("Missing dependency", "OpenCV and NumPy are required. Run: pip install -r requirements.txt")
             return
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Open video",
-            str(Path.home()),
-            "Video files (*.mp4 *.avi *.mov *.mkv *.webm);;All files (*.*)",
-        )
-        if path:
-            self.load_video(path)
+        try:
+            # Use an explicit Qt dialog instead of the static native-dialog
+            # helper. This is more reliable across Windows Qt installations
+            # and avoids crashes in some native file-dialog backends.
+            dialog = QFileDialog(self)
+            dialog.setWindowTitle("Open video")
+            dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
+            dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptOpen)
+            dialog.setNameFilter(
+                "Video files (*.mp4 *.avi *.mov *.mkv *.webm);;All files (*.*)"
+            )
+            dialog.setDirectory(str(Path.cwd()))
+            dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            selected_files = dialog.selectedFiles()
+            if selected_files:
+                self.load_video(selected_files[0])
+        except Exception as exc:
+            self._show_error(
+                "File selection error",
+                f"The video file dialog could not be opened.\n\n{exc}",
+            )
 
     def load_video(self, path: str) -> bool:
         if cv2 is None:
@@ -650,15 +688,15 @@ class VideoPlayer(QMainWindow):
         if self._histogram_window is not None and self._histogram_window.isVisible():
             roi = self.canvas.roi()
             if roi is not None and self._current_frame is not None:
-                if not self._histogram_refresh_timer.isActive():
-                    self._histogram_refresh_timer.start(HISTOGRAM_REFRESH_INTERVAL_MS)
+                # This is intentionally called for every decoded frame.
+                self._histogram_window.set_data(
+                    self._current_frame, roi, self.histogram_percent_spin.value()
+                )
 
-    def _refresh_histogram(self) -> None:
-        if self._histogram_window is None or not self._histogram_window.isVisible():
-            return
-        roi = self.canvas.roi()
-        if roi is not None and self._current_frame is not None:
-            self._histogram_window.set_data(self._current_frame, roi)
+    def _histogram_percentage_changed(self, _value: int) -> None:
+        # Recalculate immediately for the current frame when the user changes
+        # the sampling percentage.
+        self._update_histogram()
 
     def show_histogram(self) -> None:
         if self._capture is None or self._current_frame is None:
@@ -671,15 +709,15 @@ class VideoPlayer(QMainWindow):
         if self._histogram_window is None:
             self._histogram_window = HistogramWindow(self)
             self._histogram_window.destroyed.connect(lambda: setattr(self, "_histogram_window", None))
-        self._histogram_refresh_timer.stop()
-        self._histogram_window.set_data(self._current_frame, roi)
+        self._histogram_window.set_data(
+            self._current_frame, roi, self.histogram_percent_spin.value()
+        )
         self._histogram_window.show()
         self._histogram_window.raise_()
         self._histogram_window.activateWindow()
 
     def closeEvent(self, event) -> None:
         self.timer.stop()
-        self._histogram_refresh_timer.stop()
         if self._capture is not None:
             self._capture.release()
         if self._histogram_window is not None:

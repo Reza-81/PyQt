@@ -9,6 +9,8 @@ This folder contains a simple video player built with PyQt6, OpenCV, and NumPy.
 - Seek by frame number using the spin box or slider.
 - Drag a rectangular region over the displayed frame.
 - Show a live RGB histogram for the selected region in a separate window.
+- Choose the percentage of ROI pixels used for each histogram from 1% to 100%.
+- Recalculate the histogram for every video frame while the histogram window is open.
 - User-facing dialogs for missing dependencies, unreadable videos, invalid frames, and invalid selections.
 
 ## Run

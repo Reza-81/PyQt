@@ -6,8 +6,8 @@ __pycache__/
 .mypy_cache/
 
 # Local virtual environments
+venv
 venv/
-.venv/
 env/
 
 # IDE and OS files
