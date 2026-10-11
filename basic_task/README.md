@@ -7,6 +7,7 @@ This folder contains a simple video player built with PyQt6, OpenCV, and NumPy.
 - Open common video files (`mp4`, `avi`, `mov`, `mkv`, and `webm`).
 - Play, pause, and stop with a `QTimer`-driven playback loop.
 - Seek by frame number using the spin box or slider.
+- Hover over the frame slider to preview the corresponding frame in a small popup.
 - Drag a rectangular region over the displayed frame.
 - Show a live RGB histogram for the selected region in a separate window.
 - Choose the percentage of ROI pixels used for each histogram from 1% to 100%.

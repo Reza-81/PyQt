@@ -13,7 +13,7 @@ from typing import Optional
 
 try:  # The requested binding.
     from PyQt6.QtCore import QLineF, QPoint, QRectF, Qt, QTimer
-    from PyQt6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen
+    from PyQt6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap
     from PyQt6.QtWidgets import (
         QApplication,
         QAbstractSpinBox,
@@ -35,7 +35,7 @@ try:  # The requested binding.
     from PyQt6.QtCore import pyqtSignal as Signal
 except ImportError:  # pragma: no cover - exercised only when PyQt6 is absent.
     from PySide6.QtCore import QLineF, QPoint, QRectF, Qt, QTimer, Signal
-    from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen
+    from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap
     from PySide6.QtWidgets import (
         QApplication,
         QAbstractSpinBox,
@@ -71,6 +71,76 @@ def clamp(value: int, low: int, high: int) -> int:
 
 
 DEFAULT_HISTOGRAM_PERCENTAGE = 25
+
+
+class PreviewSlider(QSlider):
+    """Slider that reports the frame under the mouse without changing value."""
+
+    hover_value_changed = Signal(int)
+    hover_left = Signal()
+
+    def __init__(self, orientation: Qt.Orientation, parent: Optional[QWidget] = None) -> None:
+        super().__init__(orientation, parent)
+        self.setMouseTracking(True)
+        self._last_hover_value: Optional[int] = None
+
+    def value_at_x(self, x: int) -> int:
+        if self.maximum() <= self.minimum() or self.width() <= 1:
+            return self.minimum()
+        x = clamp(x, 0, self.width() - 1)
+        ratio = x / max(1, self.width() - 1)
+        return round(self.minimum() + ratio * (self.maximum() - self.minimum()))
+
+    def mouseMoveEvent(self, event) -> None:
+        super().mouseMoveEvent(event)
+        value = self.value_at_x(round(event.position().x()))
+        if value != self._last_hover_value:
+            self._last_hover_value = value
+            self.hover_value_changed.emit(value)
+
+    def leaveEvent(self, event) -> None:
+        self._last_hover_value = None
+        self.hover_left.emit()
+        super().leaveEvent(event)
+
+
+class FramePreviewPopup(QFrame):
+    """Small non-interactive thumbnail shown while hovering the frame slider."""
+
+    def __init__(self) -> None:
+        super().__init__(None, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setFixedSize(204, 140)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(7, 7, 7, 6)
+        layout.setSpacing(3)
+        self.image_label = QLabel()
+        self.image_label.setFixedSize(190, 106)
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.image_label)
+        self.frame_label = QLabel("Frame -")
+        self.frame_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.frame_label)
+        self.setStyleSheet(
+            "QFrame { background: #101b2a; border: 1px solid #4d7398; border-radius: 6px; }"
+            "QLabel { background: transparent; color: #e6edf6; border: none; }"
+        )
+
+    def set_frame(self, frame_bgr, frame_index: int) -> None:
+        if cv2 is None or np is None or frame_bgr is None:
+            return
+        height, width = frame_bgr.shape[:2]
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        image = QImage(
+            rgb.data, width, height, int(rgb.strides[0]), QImage.Format.Format_RGB888
+        ).copy()
+        image = image.scaled(
+            self.image_label.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.image_label.setPixmap(QPixmap.fromImage(image))
+        self.frame_label.setText(f"Frame {frame_index}")
 
 
 class VideoCanvas(QWidget):
@@ -357,9 +427,17 @@ class VideoPlayer(QMainWindow):
         self._fps = 30.0
         self._updating_controls = False
         self._histogram_window: Optional[HistogramWindow] = None
+        self._preview_capture = None
+        self._pending_preview_index: Optional[int] = None
+        self._preview_popup = FramePreviewPopup()
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._advance_frame)
+
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(35)
+        self._preview_timer.timeout.connect(self._update_frame_preview)
 
         self.canvas = VideoCanvas()
         self.canvas.roi_selected.connect(self._on_roi_selected)
@@ -407,9 +485,11 @@ class VideoPlayer(QMainWindow):
         row.addWidget(self.frame_spin)
         side_layout.addLayout(row)
 
-        self.frame_slider = QSlider(Qt.Orientation.Horizontal)
+        self.frame_slider = PreviewSlider(Qt.Orientation.Horizontal)
         self.frame_slider.setRange(0, 0)
         self.frame_slider.valueChanged.connect(self._slider_frame_changed)
+        self.frame_slider.hover_value_changed.connect(self._schedule_frame_preview)
+        self.frame_slider.hover_left.connect(self._hide_frame_preview)
         side_layout.addWidget(self.frame_slider)
         slider_labels = QHBoxLayout()
         self.first_frame_label = QLabel("0")
@@ -548,18 +628,33 @@ class VideoPlayer(QMainWindow):
             self._show_error("Unable to open video", f"OpenCV could not open:\n{path}\n\nCheck that the file exists and uses a supported codec.")
             return False
 
+        preview_capture = None
+        try:
+            preview_capture = cv2.VideoCapture(path)
+            if not preview_capture.isOpened():
+                preview_capture.release()
+                preview_capture = None
+        except Exception:
+            preview_capture = None
+
         frame_count = int(new_capture.get(cv2.CAP_PROP_FRAME_COUNT))
         fps = float(new_capture.get(cv2.CAP_PROP_FPS))
         width = int(new_capture.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(new_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
         if frame_count <= 0 or width <= 0 or height <= 0:
             new_capture.release()
+            if preview_capture is not None:
+                preview_capture.release()
             self._show_error("Invalid video", "The selected file does not contain readable video frames.")
             return False
 
         if self._capture is not None:
             self._capture.release()
+        if self._preview_capture is not None:
+            self._preview_capture.release()
         self._capture = new_capture
+        self._preview_capture = preview_capture
+        self._hide_frame_preview()
         self._video_path = path
         self._frame_count = frame_count
         self._fps = fps if fps > 0.0 else 30.0
@@ -622,6 +717,66 @@ class VideoPlayer(QMainWindow):
     def _slider_frame_changed(self, value: int) -> None:
         if not self._updating_controls and self._capture is not None:
             self._read_and_display(value)
+
+    def _schedule_frame_preview(self, index: int) -> None:
+        if self._preview_capture is None or self._frame_count <= 0:
+            return
+        self._pending_preview_index = clamp(index, 0, self._frame_count - 1)
+        self._preview_timer.start()
+
+    def _hide_frame_preview(self) -> None:
+        self._preview_timer.stop()
+        self._pending_preview_index = None
+        self._preview_popup.hide()
+
+    def _update_frame_preview(self) -> None:
+        index = self._pending_preview_index
+        if index is None or self._preview_capture is None:
+            return
+        try:
+            self._preview_capture.set(cv2.CAP_PROP_POS_FRAMES, index)
+            ok, frame = self._preview_capture.read()
+        except Exception:
+            return
+        if not ok or frame is None:
+            return
+        self._preview_popup.set_frame(frame, index)
+
+        slider_x = round(
+            (index - self.frame_slider.minimum())
+            / max(1, self.frame_slider.maximum() - self.frame_slider.minimum())
+            * max(1, self.frame_slider.width() - 1)
+        )
+        anchor = self.frame_slider.mapToGlobal(
+            QPoint(slider_x, self.frame_slider.height() + 7)
+        )
+        self._preview_popup.adjustSize()
+        popup_width = self._preview_popup.width()
+        popup_height = self._preview_popup.height()
+        screen = QApplication.screenAt(anchor) or QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            popup_x = clamp(
+                anchor.x() - popup_width // 2,
+                available.left(),
+                available.right() - popup_width + 1,
+            )
+            popup_y = anchor.y()
+            if popup_y + popup_height > available.bottom() + 1:
+                popup_y = self.frame_slider.mapToGlobal(
+                    QPoint(slider_x, -popup_height - 7)
+                ).y()
+            popup_y = clamp(
+                popup_y,
+                available.top(),
+                available.bottom() - popup_height + 1,
+            )
+        else:
+            popup_x = anchor.x() - popup_width // 2
+            popup_y = anchor.y()
+        self._preview_popup.move(popup_x, popup_y)
+        self._preview_popup.show()
+        self._preview_popup.raise_()
 
     def toggle_playback(self) -> None:
         if self.timer.isActive():
@@ -718,10 +873,14 @@ class VideoPlayer(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self.timer.stop()
+        self._hide_frame_preview()
         if self._capture is not None:
             self._capture.release()
+        if self._preview_capture is not None:
+            self._preview_capture.release()
         if self._histogram_window is not None:
             self._histogram_window.close()
+        self._preview_popup.close()
         event.accept()
 
 
