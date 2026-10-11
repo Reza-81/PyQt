@@ -29,6 +29,7 @@ try:  # The requested binding.
         QSizePolicy,
         QSlider,
         QSpinBox,
+        QToolButton,
         QVBoxLayout,
         QWidget,
     )
@@ -51,6 +52,7 @@ except ImportError:  # pragma: no cover - exercised only when PyQt6 is absent.
         QSizePolicy,
         QSlider,
         QSpinBox,
+        QToolButton,
         QVBoxLayout,
         QWidget,
     )
@@ -473,12 +475,6 @@ class VideoPlayer(QMainWindow):
         self.info_label.setObjectName("info")
         side_layout.addWidget(self.info_label)
 
-        self.frame_spin = QSpinBox()
-        self.frame_spin.setRange(0, 0)
-        self.frame_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.UpDownArrows)
-        self.frame_spin.setMaximumWidth(92)
-        self.frame_spin.valueChanged.connect(self._spin_frame_changed)
-
         self.frame_slider = PreviewSlider(Qt.Orientation.Horizontal)
         self.frame_slider.setRange(0, 0)
         self.frame_slider.valueChanged.connect(self._slider_frame_changed)
@@ -500,6 +496,9 @@ class VideoPlayer(QMainWindow):
         percentage_row.addWidget(QLabel("Pixels used"))
         self.histogram_percent_spin = QSpinBox()
         self.histogram_percent_spin.setRange(1, 100)
+        self.histogram_percent_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.histogram_percent_spin.setAccelerated(True)
+        self.histogram_percent_spin.setKeyboardTracking(True)
         self.histogram_percent_spin.setValue(DEFAULT_HISTOGRAM_PERCENTAGE)
         self.histogram_percent_spin.setSuffix(" %")
         self.histogram_percent_spin.setToolTip(
@@ -507,6 +506,27 @@ class VideoPlayer(QMainWindow):
         )
         self.histogram_percent_spin.valueChanged.connect(self._histogram_percentage_changed)
         percentage_row.addWidget(self.histogram_percent_spin)
+
+        percentage_arrows = QVBoxLayout()
+        percentage_arrows.setContentsMargins(0, 0, 0, 0)
+        percentage_arrows.setSpacing(1)
+        self.percentage_up_button = QToolButton()
+        self.percentage_up_button.setObjectName("percentageArrow")
+        self.percentage_up_button.setText("\u25B2")
+        self.percentage_up_button.setToolTip("Increase histogram pixel percentage")
+        self.percentage_up_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.percentage_up_button.setFixedSize(34, 16)
+        self.percentage_up_button.clicked.connect(self.histogram_percent_spin.stepUp)
+        self.percentage_down_button = QToolButton()
+        self.percentage_down_button.setObjectName("percentageArrow")
+        self.percentage_down_button.setText("\u25BC")
+        self.percentage_down_button.setToolTip("Decrease histogram pixel percentage")
+        self.percentage_down_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.percentage_down_button.setFixedSize(34, 16)
+        self.percentage_down_button.clicked.connect(self.histogram_percent_spin.stepDown)
+        percentage_arrows.addWidget(self.percentage_up_button)
+        percentage_arrows.addWidget(self.percentage_down_button)
+        percentage_row.addLayout(percentage_arrows)
         side_layout.addLayout(percentage_row)
         percentage_help = QLabel("100% uses every pixel. The histogram updates on every frame.")
         percentage_help.setWordWrap(True)
@@ -546,11 +566,11 @@ class VideoPlayer(QMainWindow):
         controls.addWidget(self.toggle_button)
         controls.addWidget(self.next_button)
         controls.addWidget(self.stop_button)
-        controls.addWidget(QLabel("Frame:"))
-        controls.addWidget(self.frame_spin)
         controls.addWidget(self.frame_slider, 1)
         self.frame_status = QLabel("Frame: —")
         self.frame_status.setObjectName("frame_status")
+        self.frame_status.setMinimumWidth(90)
+        self.frame_status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         controls.addWidget(self.frame_status)
         content.addLayout(controls)
         outer.addLayout(content, 1)
@@ -571,9 +591,12 @@ class VideoPlayer(QMainWindow):
             QPushButton { background: #ffffff; border: 1px solid #cbd6e2; border-radius: 6px; padding: 9px 12px; }
             QPushButton:hover { background: #edf5ff; border-color: #2584e8; }
             QPushButton#primary { background: #1685e5; color: #ffffff; border-color: #1685e5; }
-            QPushButton#primary:hover { background: #0e70c3; }
-            QSpinBox { background: #ffffff; border: 1px solid #cbd6e2; border-radius: 5px; padding: 5px; }
-            QSlider::groove:horizontal { height: 5px; background: #dbe4ee; border-radius: 2px; }
+             QPushButton#primary:hover { background: #0e70c3; }
+             QSpinBox { background: #ffffff; border: 1px solid #cbd6e2; border-radius: 5px; padding: 5px; }
+             QToolButton#percentageArrow { background: #ffffff; color: #203047; border: 1px solid #cbd6e2; border-radius: 2px; padding: 0px; font-size: 10px; }
+             QToolButton#percentageArrow:hover { background: #edf5ff; color: #1685e5; border-color: #2584e8; }
+             QToolButton#percentageArrow:pressed { background: #1685e5; color: #ffffff; border-color: #0e70c3; }
+             QSlider::groove:horizontal { height: 5px; background: #dbe4ee; border-radius: 2px; }
             QSlider::handle:horizontal { width: 15px; margin: -5px 0; background: #1685e5; border-radius: 7px; }
             """
         )
@@ -655,7 +678,6 @@ class VideoPlayer(QMainWindow):
         self._frame_count = frame_count
         self._fps = fps if fps > 0.0 else 30.0
         self.frame_slider.setRange(0, frame_count - 1)
-        self.frame_spin.setRange(0, frame_count - 1)
         self.info_label.setText(
             f"Resolution: {width} × {height}\n"
             f"FPS: {self._fps:.2f}\n"
@@ -697,16 +719,11 @@ class VideoPlayer(QMainWindow):
     def _sync_frame_controls(self, index: int) -> None:
         self._updating_controls = True
         try:
-            self.frame_spin.setValue(index)
             self.frame_slider.setValue(index)
         finally:
             self._updating_controls = False
         total = max(0, self._frame_count - 1)
         self.frame_status.setText(f"Frame: {index} / {total}")
-
-    def _spin_frame_changed(self, value: int) -> None:
-        if not self._updating_controls and self._capture is not None:
-            self._read_and_display(value)
 
     def _slider_frame_changed(self, value: int) -> None:
         if not self._updating_controls and self._capture is not None:
